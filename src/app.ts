@@ -18,8 +18,17 @@ export type Env = {
   };
 };
 
+export type BatchOddsResponse = {
+  odds: OddsResponse[];
+  errors: Array<{ id: string; error: string }>;
+  timestamp: string;
+};
+
 // Per-request Hono context vars.
-type Vars = { odds: OddsResponse };
+type Vars = {
+  odds: OddsResponse;
+  batch: BatchOddsResponse;
+};
 
 export type OddsResponse = {
   // Native identifier: Polymarket slug or Kalshi ticker.
@@ -311,6 +320,63 @@ const polymarketDiscovery = declareDiscoveryExtension({
   },
 });
 
+const batchDiscovery = declareDiscoveryExtension({
+  pathParamsSchema: {
+    type: "object",
+    properties: {
+      slugs: {
+        type: "string",
+        description:
+          "Comma-separated Polymarket slugs (max 20). Returns odds for each; per-slug errors are listed separately. Charged per request, not per slug.",
+      },
+    },
+    required: ["slugs"],
+  },
+  output: {
+    example: {
+      odds: [
+        {
+          id: "epl-sun-che-2026-11-08-che",
+          question: "Will Chelsea FC win on 2026-11-08?",
+          outcomes: [
+            { name: "Yes", price: 0.515, probability: "51.5%" },
+            { name: "No", price: 0.485, probability: "48.5%" },
+          ],
+          volume24hr: 4866037.76,
+          liquidity: 854785.91,
+          endDate: "2026-11-08T14:00:00Z",
+          active: true,
+          closed: false,
+          source: "polymarket",
+          timestamp: "2026-11-08T12:00:00.000Z",
+        },
+      ],
+      errors: [{ id: "nonexistent-slug", error: "no polymarket market: nonexistent-slug" }],
+      timestamp: "2026-11-08T12:00:00.000Z",
+    },
+    schema: {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      required: ["odds", "errors", "timestamp"],
+      properties: {
+        odds: { type: "array", items: ODDS_RESPONSE_SCHEMA },
+        errors: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["id", "error"],
+            properties: {
+              id: { type: "string" },
+              error: { type: "string" },
+            },
+          },
+        },
+        timestamp: { type: "string" },
+      },
+    },
+  },
+});
+
 const kalshiDiscovery = declareDiscoveryExtension({
   pathParamsSchema: {
     type: "object",
@@ -385,6 +451,10 @@ export function buildApp(env: Env) {
     network,
     payTo: env.PAYOUT_ADDRESS,
   };
+  const cheapPayment = { ...basePayment, price: "$0.001" };
+  const batchPayment = { ...basePayment, price: "$0.02" };
+
+  const MAX_BATCH = 20;
 
   // Pre-paywall validators: fetch upstream BEFORE the paymentMiddleware runs.
   // If the resource doesn't exist, bail with a well-formed 404 without ever
@@ -403,6 +473,66 @@ export function buildApp(env: Env) {
       );
     }
     c.set("odds", result.data);
+    await next();
+  });
+
+  // Cheap single-slug Polymarket at $0.001 — parallel path for price elasticity.
+  app.use("/api/polymarket/odds-cheap", async (c, next) => {
+    const slug = c.req.query("slug");
+    if (!slug) return c.json({ error: "missing query param: slug" }, 400);
+    const result = await fetchPolymarketOdds(slug);
+    if (!result.ok) {
+      return c.json(
+        { error: result.message },
+        result.status as 400 | 404 | 500 | 502 | 504,
+      );
+    }
+    c.set("odds", result.data);
+    await next();
+  });
+
+  // Batch endpoint pre-validator. Fetch all slugs in parallel. If NONE resolve,
+  // refuse to charge (404). If at least one resolves, let payment proceed and
+  // return the mixed result with per-slug errors documented.
+  app.use("/api/polymarket/odds/batch", async (c, next) => {
+    const slugsRaw = c.req.query("slugs");
+    if (!slugsRaw) return c.json({ error: "missing query param: slugs" }, 400);
+    const slugs = slugsRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (slugs.length === 0)
+      return c.json({ error: "empty slugs list" }, 400);
+    if (slugs.length > MAX_BATCH)
+      return c.json(
+        {
+          error: `too many slugs (max ${MAX_BATCH}, got ${slugs.length})`,
+        },
+        400,
+      );
+    const settled = await Promise.all(
+      slugs.map(async (slug) => ({ slug, result: await fetchPolymarketOdds(slug) })),
+    );
+    const odds: OddsResponse[] = [];
+    const errors: Array<{ id: string; error: string }> = [];
+    for (const { slug, result } of settled) {
+      if (result.ok) odds.push(result.data);
+      else errors.push({ id: slug, error: result.message });
+    }
+    if (odds.length === 0) {
+      return c.json(
+        {
+          error: "no resolvable markets in batch",
+          errors,
+        },
+        404,
+      );
+    }
+    c.set("batch", {
+      odds,
+      errors,
+      timestamp: new Date().toISOString(),
+    });
     await next();
   });
 
@@ -430,6 +560,20 @@ export function buildApp(env: Env) {
           mimeType: "application/json",
           extensions: { ...polymarketDiscovery },
         },
+        "GET /api/polymarket/odds-cheap": {
+          accepts: [cheapPayment],
+          description:
+            "Same as /api/polymarket/odds but priced at $0.001. Price elasticity test.",
+          mimeType: "application/json",
+          extensions: { ...polymarketDiscovery },
+        },
+        "GET /api/polymarket/odds/batch": {
+          accepts: [batchPayment],
+          description:
+            "Batch Polymarket odds lookup: up to 20 slugs per paid call at $0.02 (vs. 20x$0.005 singles).",
+          mimeType: "application/json",
+          extensions: { ...batchDiscovery },
+        },
         "GET /api/kalshi/odds": {
           accepts: [basePayment],
           description:
@@ -443,16 +587,27 @@ export function buildApp(env: Env) {
   );
 
   app.get("/api/polymarket/odds", (c) => c.json(c.get("odds")));
+  app.get("/api/polymarket/odds-cheap", (c) => c.json(c.get("odds")));
+  app.get("/api/polymarket/odds/batch", (c) => c.json(c.get("batch")));
   app.get("/api/kalshi/odds", (c) => c.json(c.get("odds")));
 
   app.get("/", (c) =>
     c.json({
       service: "polymarket-odds-x402",
       endpoints: [
-        "GET /api/polymarket/odds?slug=<market-slug>",
-        "GET /api/kalshi/odds?ticker=<market-ticker>",
+        { path: "GET /api/polymarket/odds?slug=<slug>", price: "$0.005" },
+        {
+          path: "GET /api/polymarket/odds-cheap?slug=<slug>",
+          price: "$0.001",
+          note: "price elasticity test",
+        },
+        {
+          path: "GET /api/polymarket/odds/batch?slugs=<a,b,c>",
+          price: "$0.02",
+          note: `up to ${MAX_BATCH} slugs per call`,
+        },
+        { path: "GET /api/kalshi/odds?ticker=<ticker>", price: "$0.005" },
       ],
-      pricing: "$0.005 per request",
       network: env.NETWORK,
       sources: ["polymarket", "kalshi"],
     }),

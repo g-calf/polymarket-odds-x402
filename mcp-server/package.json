@@ -1,0 +1,28 @@
+{
+  "name": "goldencalf-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing Polymarket + Kalshi odds via x402 micropayments. For Claude Desktop and any MCP-aware agent runtime.",
+  "type": "module",
+  "bin": {
+    "goldencalf-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "files": ["dist", "README.md"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@x402/core": "^2.30.0",
+    "@x402/evm": "^2.30.0",
+    "@x402/fetch": "^2.30.0",
+    "viem": "^2.21.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}
