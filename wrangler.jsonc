@@ -14,5 +14,9 @@
     "NETWORK": "eip155:8453",
     // Testnet facilitator. Mainnet uses https://facilitator.payai.network
     "FACILITATOR_URL": "https://facilitator.payai.network"
-  }
+  },
+  // Request-level analytics. Query from CF dashboard SQL or the GraphQL API.
+  "analytics_engine_datasets": [
+    { "binding": "ANALYTICS", "dataset": "polymarket_odds_x402" }
+  ]
 }
