@@ -1,0 +1,31 @@
+{
+  "name": "polymarket-odds-x402",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Single-market Polymarket odds API, gated by x402 micropayments.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=.dev.vars src/node.ts",
+    "start": "tsx --env-file=.dev.vars src/node.ts",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "client": "tsx --env-file=.dev.vars scripts/client.ts",
+    "genwallet": "tsx scripts/genwallet.ts"
+  },
+  "dependencies": {
+    "hono": "^4.13.7",
+    "@hono/node-server": "^2.1.6",
+    "@x402/hono": "^2.30.0",
+    "@x402/core": "^2.30.0",
+    "@x402/evm": "^2.30.0",
+    "@x402/extensions": "^2.30.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0",
+    "wrangler": "^3.90.0",
+    "@x402/fetch": "^2.30.0",
+    "viem": "^2.21.0"
+  }
+}

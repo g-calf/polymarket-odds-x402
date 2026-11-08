@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "polymarket-odds-x402",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    // Payout wallet (Base). Replace before deploying for real.
+    "PAYOUT_ADDRESS": "0xE5126f9Cf0fab2B709D932b2516Ade946ebD9629",
+    // Testnet first. Flip to eip155:8453 (base mainnet) once the loop is proven.
+    "NETWORK": "eip155:8453",
+    // Testnet facilitator. Mainnet uses https://facilitator.payai.network
+    "FACILITATOR_URL": "https://facilitator.payai.network"
+  }
+}
