@@ -45,7 +45,7 @@ can parse without reading these docs.
 ### Claude Desktop / any MCP client (easiest)
 
 ```bash
-npm install -g goldencalf-mcp
+npm install -g @gcalf/mcp
 ```
 
 Add to `claude_desktop_config.json`:

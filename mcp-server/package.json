@@ -1,6 +1,7 @@
 {
-  "name": "goldencalf-mcp",
+  "name": "@gcalf/mcp",
   "version": "0.1.0",
+  "publishConfig": { "access": "public" },
   "description": "MCP server exposing Polymarket + Kalshi odds via x402 micropayments. For Claude Desktop and any MCP-aware agent runtime.",
   "type": "module",
   "bin": {

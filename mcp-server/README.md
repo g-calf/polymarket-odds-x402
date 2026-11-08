@@ -1,4 +1,4 @@
-# goldencalf-mcp
+# @gcalf/mcp
 
 MCP (Model Context Protocol) server exposing live Polymarket and Kalshi
 prediction market odds to any MCP-aware agent runtime. Each call is paid in
@@ -14,7 +14,7 @@ subscriptions.
 ## Install
 
 ```bash
-npm install -g goldencalf-mcp
+npm install -g @gcalf/mcp
 ```
 
 ## Configure for Claude Desktop
@@ -27,6 +27,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`
   "mcpServers": {
     "goldencalf": {
       "command": "goldencalf-mcp",
+      "_comment": "the `bin` name stays unscoped even though the package is @alxndrwlsn/goldencalf-mcp",
       "env": {
         "CLIENT_PRIVATE_KEY": "0xYOUR_FUNDED_TEST_WALLET_PRIVATE_KEY"
       }

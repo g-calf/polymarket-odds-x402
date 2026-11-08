@@ -20,7 +20,7 @@ Agents can fetch live Polymarket + Kalshi odds for $0.005/call in USDC. No API k
 
 **4/** For Claude Desktop & MCP-aware agents:
 ```
-npm install -g goldencalf-mcp
+npm install -g @gcalf/mcp
 ```
 Three tools auto-register. Pays from a wallet you control. Full setup → github in reply.
 
@@ -45,7 +45,7 @@ Hey — just shipped a working x402 endpoint on Base mainnet that any agent can 
 
 **Base URL:** `https://polymarket-odds-x402.goldencalf.workers.dev`
 
-**MCP server:** `npm install -g goldencalf-mcp` → set `CLIENT_PRIVATE_KEY` in your Claude Desktop (or other MCP runtime) config → three tools auto-register.
+**MCP server:** `npm install -g @gcalf/mcp` → set `CLIENT_PRIVATE_KEY` in your Claude Desktop (or other MCP runtime) config → three tools auto-register.
 
 **TypeScript one-liner:** uses standard `@x402/fetch` + viem signer. Example in the README.
 
@@ -72,7 +72,7 @@ Happy to open a PR if it fits. Repo: https://gitlab.com/alxndrwlsn/goldencalf
 
 ## One-paragraph version for cold DMs / short posts
 
-I built an x402-paid endpoint on Base mainnet that returns live implied odds for Polymarket and Kalshi markets at $0.005/call. For Claude Desktop and other MCP runtimes, `npm install -g goldencalf-mcp` gives you three tools out of the box. For TypeScript agents, use `@x402/fetch` with a funded wallet. Source and docs: https://gitlab.com/alxndrwlsn/goldencalf
+I built an x402-paid endpoint on Base mainnet that returns live implied odds for Polymarket and Kalshi markets at $0.005/call. For Claude Desktop and other MCP runtimes, `npm install -g @gcalf/mcp` gives you three tools out of the box. For TypeScript agents, use `@x402/fetch` with a funded wallet. Source and docs: https://gitlab.com/alxndrwlsn/goldencalf
 
 ---
 
