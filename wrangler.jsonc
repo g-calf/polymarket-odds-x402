@@ -12,8 +12,10 @@
     "PAYOUT_ADDRESS": "0xE5126f9Cf0fab2B709D932b2516Ade946ebD9629",
     // Testnet first. Flip to eip155:8453 (base mainnet) once the loop is proven.
     "NETWORK": "eip155:8453",
-    // Testnet facilitator. Mainnet uses https://facilitator.payai.network
-    "FACILITATOR_URL": "https://facilitator.payai.network"
+    // CDP's x402 facilitator (ranked Bazaar). Requires CDP_API_KEY_NAME
+    // and CDP_API_KEY_SECRET to be set as Worker secrets.
+    // Fallback (no auth, smaller catalog): https://facilitator.payai.network
+    "FACILITATOR_URL": "https://api.cdp.coinbase.com/platform/v2/x402"
   },
   // Request-level analytics. Query from CF dashboard SQL or the GraphQL API.
   "analytics_engine_datasets": [

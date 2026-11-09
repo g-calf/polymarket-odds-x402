@@ -8,6 +8,10 @@ export type Env = {
   PAYOUT_ADDRESS: string;
   NETWORK: string;
   FACILITATOR_URL: string;
+  // CDP x402 facilitator credentials (required only when FACILITATOR_URL
+  // points at api.cdp.coinbase.com). Stored as encrypted Worker secrets.
+  CDP_API_KEY_NAME?: string;
+  CDP_API_KEY_SECRET?: string;
   // Analytics Engine binding (optional: absent locally under Node).
   ANALYTICS?: {
     writeDataPoint(event: {
@@ -37,6 +41,124 @@ type Vars = {
   odds: OddsResponse;
   batch: BatchOddsResponse;
 };
+
+// --- CDP x402 facilitator JWT auth -----------------------------------------
+
+// CDP's x402 facilitator requires a per-request Bearer JWT. Format:
+//   header: { alg: "EdDSA", kid: <key_name>, typ: "JWT", nonce: 16-byte hex }
+//   claims: { sub: <key_name>, iss: "cdp", nbf: now, exp: now+120,
+//             uris: ["POST api.cdp.coinbase.com/platform/v2/x402/<path>"] }
+// Signed with Ed25519 using the raw 32-byte key seed.
+// CDP key secret is 64 bytes base64 = seed(32) || pub(32); we use the seed.
+
+const PKCS8_ED25519_PREFIX = new Uint8Array([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
+  0x04, 0x22, 0x04, 0x20,
+]);
+
+function b64urlEncode(bytes: Uint8Array | string): string {
+  const s = typeof bytes === "string" ? bytes : String.fromCharCode(...bytes);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function b64decode(s: string): Uint8Array {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+let cachedCdpKey: Promise<CryptoKey> | undefined;
+function importCdpKey(secretB64: string): Promise<CryptoKey> {
+  if (cachedCdpKey) return cachedCdpKey;
+  const raw = b64decode(secretB64);
+  // CDP ships 64 bytes (seed || pub). We only need the first 32 (seed).
+  const seed = raw.slice(0, 32);
+  const pkcs8 = new Uint8Array(PKCS8_ED25519_PREFIX.length + seed.length);
+  pkcs8.set(PKCS8_ED25519_PREFIX, 0);
+  pkcs8.set(seed, PKCS8_ED25519_PREFIX.length);
+  // Ed25519 isn't in the standard WebCrypto types shipped with CF Workers
+  // types yet, but the runtime supports it. Cast to bypass the type check.
+  const subtle = crypto.subtle as unknown as {
+    importKey(
+      f: string,
+      k: Uint8Array,
+      a: { name: string },
+      e: boolean,
+      u: string[],
+    ): Promise<CryptoKey>;
+  };
+  cachedCdpKey = subtle.importKey(
+    "pkcs8",
+    pkcs8,
+    { name: "Ed25519" },
+    false,
+    ["sign"],
+  );
+  return cachedCdpKey;
+}
+
+async function signCdpJwt(
+  keyName: string,
+  key: CryptoKey,
+  path: "verify" | "settle" | "supported",
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
+  const nonce = Array.from(nonceBytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  const header = {
+    alg: "EdDSA",
+    kid: keyName,
+    typ: "JWT",
+    nonce,
+  };
+  // /supported is GET; /verify and /settle are POST. The uris claim must
+  // match the facilitator's actual method, else CDP rejects as 401.
+  const method = path === "supported" ? "GET" : "POST";
+  const claims = {
+    sub: keyName,
+    iss: "cdp",
+    nbf: now,
+    exp: now + 120,
+    uris: [`${method} api.cdp.coinbase.com/platform/v2/x402/${path}`],
+  };
+  const h = b64urlEncode(JSON.stringify(header));
+  const p = b64urlEncode(JSON.stringify(claims));
+  const signingInput = `${h}.${p}`;
+  const subtle = crypto.subtle as unknown as {
+    sign(a: string, k: CryptoKey, d: ArrayBuffer): Promise<ArrayBuffer>;
+  };
+  const sigBuf = await subtle.sign(
+    "Ed25519",
+    key,
+    new TextEncoder().encode(signingInput).buffer as ArrayBuffer,
+  );
+  const sig = b64urlEncode(new Uint8Array(sigBuf));
+  return `${h}.${p}.${sig}`;
+}
+
+function buildCreateAuthHeaders(env: Env) {
+  return async () => {
+    if (!env.CDP_API_KEY_NAME || !env.CDP_API_KEY_SECRET) {
+      // No CDP creds configured; return empty — payai etc. don't need auth.
+      return {};
+    }
+    const key = await importCdpKey(env.CDP_API_KEY_SECRET);
+    const name = env.CDP_API_KEY_NAME;
+    const [v, s, sup] = await Promise.all([
+      signCdpJwt(name, key, "verify"),
+      signCdpJwt(name, key, "settle"),
+      signCdpJwt(name, key, "supported"),
+    ]);
+    return {
+      verify: { Authorization: `Bearer ${v}` },
+      settle: { Authorization: `Bearer ${s}` },
+      supported: { Authorization: `Bearer ${sup}` },
+    };
+  };
+}
 
 // --- D1 snapshot logging + payer extraction -------------------------------
 
@@ -600,7 +722,10 @@ export function buildApp(env: Env) {
   // template-literal type the SDK expects.
   const network = env.NETWORK as `${string}:${string}`;
 
-  const facilitator = new HTTPFacilitatorClient({ url: env.FACILITATOR_URL });
+  const facilitator = new HTTPFacilitatorClient({
+    url: env.FACILITATOR_URL,
+    createAuthHeaders: buildCreateAuthHeaders(env),
+  });
   const resourceServer = new x402ResourceServer(facilitator).register(
     network,
     new ExactEvmScheme(),
