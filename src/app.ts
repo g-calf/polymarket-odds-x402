@@ -12,6 +12,9 @@ export type Env = {
   // points at api.cdp.coinbase.com). Stored as encrypted Worker secrets.
   CDP_API_KEY_NAME?: string;
   CDP_API_KEY_SECRET?: string;
+  // Ed25519 attestation signing key (PKCS8 base64). Used by the attested
+  // route to sign receipts over served data.
+  ATTESTATION_PRIVATE_KEY?: string;
   // Analytics Engine binding (optional: absent locally under Node).
   ANALYTICS?: {
     writeDataPoint(event: {
@@ -157,6 +160,126 @@ function buildCreateAuthHeaders(env: Env) {
       settle: { Authorization: `Bearer ${s}` },
       supported: { Authorization: `Bearer ${sup}` },
     };
+  };
+}
+
+// --- Attestation layer -----------------------------------------------------
+// Signs a receipt over served data with an Ed25519 key. Any third party can
+// verify the attestation using only the published public key — no round trip
+// back to us needed. This is the Level 4 (audit-grade receipts) moat.
+
+// Public key that pairs with ATTESTATION_PRIVATE_KEY. Hardcoded here so we
+// can publish it at /.well-known/attestation-public-key for verifiers.
+// If this key is ever rotated, generate a new keypair via
+// scripts/gen-attestation-key.mjs, update this constant, replace the Worker
+// secret, and bump ATTESTATION_KEY_ID so old receipts remain verifiable
+// against the old key.
+const ATTESTATION_PUBLIC_KEY_B64 = "YRY/thE6ky8Me/eYFjOyENn42mUqC4C7rLqLdg+Mgbs=";
+const ATTESTATION_KEY_ID = "goldencalf-ed25519-2026-11-09";
+const ATTESTATION_ISSUER = "goldencalf";
+
+type AttestationReceipt = {
+  issuer: string;
+  key_id: string;
+  issued_at: string;
+  resource: string;
+  params: Record<string, string>;
+  data_sha256: string;
+  signature_alg: "Ed25519";
+  signature: string; // base64 signature over canonical JSON of (issuer, key_id, issued_at, resource, params, data_sha256)
+};
+
+type AttestedResponse<T> = {
+  data: T;
+  attestation: AttestationReceipt;
+};
+
+// Deterministic JSON serialization: sort keys at every object level.
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return "[" + value.map(canonicalJson).join(",") + "]";
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return (
+    "{" +
+    keys
+      .map((k) => JSON.stringify(k) + ":" + canonicalJson(obj[k]))
+      .join(",") +
+    "}"
+  );
+}
+
+async function sha256Hex(s: string): Promise<string> {
+  const bytes = new TextEncoder().encode(s);
+  const hash = await crypto.subtle.digest(
+    "SHA-256",
+    bytes.buffer as ArrayBuffer,
+  );
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+let cachedAttKey: Promise<CryptoKey> | undefined;
+function importAttestationKey(pkcs8B64: string): Promise<CryptoKey> {
+  if (cachedAttKey) return cachedAttKey;
+  const pkcs8 = b64decode(pkcs8B64);
+  const subtle = crypto.subtle as unknown as {
+    importKey(
+      f: string,
+      k: Uint8Array,
+      a: { name: string },
+      e: boolean,
+      u: string[],
+    ): Promise<CryptoKey>;
+  };
+  cachedAttKey = subtle.importKey(
+    "pkcs8",
+    pkcs8,
+    { name: "Ed25519" },
+    false,
+    ["sign"],
+  );
+  return cachedAttKey;
+}
+
+async function signAttestation<T>(
+  env: Env,
+  resource: string,
+  params: Record<string, string>,
+  data: T,
+): Promise<AttestedResponse<T>> {
+  const pk = env.ATTESTATION_PRIVATE_KEY;
+  if (!pk) throw new Error("ATTESTATION_PRIVATE_KEY not configured");
+  const key = await importAttestationKey(pk);
+  const data_sha256 = await sha256Hex(canonicalJson(data));
+  const unsignedReceipt = {
+    issuer: ATTESTATION_ISSUER,
+    key_id: ATTESTATION_KEY_ID,
+    issued_at: new Date().toISOString(),
+    resource,
+    params,
+    data_sha256,
+  };
+  const signingInput = new TextEncoder().encode(canonicalJson(unsignedReceipt));
+  const subtle = crypto.subtle as unknown as {
+    sign(a: string, k: CryptoKey, d: ArrayBuffer): Promise<ArrayBuffer>;
+  };
+  const sigBuf = await subtle.sign(
+    "Ed25519",
+    key,
+    signingInput.buffer as ArrayBuffer,
+  );
+  const signature = btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
+  return {
+    data,
+    attestation: {
+      ...unsignedReceipt,
+      signature_alg: "Ed25519",
+      signature,
+    },
   };
 }
 
@@ -582,6 +705,80 @@ const batchDiscovery = declareDiscoveryExtension({
   },
 });
 
+const attestedDiscovery = declareDiscoveryExtension({
+  pathParamsSchema: {
+    type: "object",
+    properties: {
+      slug: {
+        type: "string",
+        description:
+          "Polymarket market slug. Returns the same odds data as /api/polymarket/odds wrapped in a signed Ed25519 attestation receipt that any third party can verify with the published public key.",
+      },
+    },
+    required: ["slug"],
+  },
+  output: {
+    example: {
+      data: {
+        id: "epl-sun-che-2026-11-08-che",
+        question: "Will Chelsea FC win on 2026-11-08?",
+        outcomes: [
+          { name: "Yes", price: 0.515, probability: "51.5%" },
+          { name: "No", price: 0.485, probability: "48.5%" },
+        ],
+        volume24hr: 4866037.76,
+        liquidity: 854785.91,
+        endDate: "2026-11-08T14:00:00Z",
+        active: true,
+        closed: false,
+        source: "polymarket",
+        timestamp: "2026-11-08T12:00:00.000Z",
+      },
+      attestation: {
+        issuer: "goldencalf",
+        key_id: "goldencalf-ed25519-2026-11-09",
+        issued_at: "2026-11-09T12:00:00.000Z",
+        resource: "/api/polymarket/odds/attested",
+        params: { slug: "epl-sun-che-2026-11-08-che" },
+        data_sha256: "a1b2c3...",
+        signature_alg: "Ed25519",
+        signature: "base64-encoded-ed25519-signature",
+      },
+    },
+    schema: {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      required: ["data", "attestation"],
+      properties: {
+        data: ODDS_RESPONSE_SCHEMA,
+        attestation: {
+          type: "object",
+          required: [
+            "issuer",
+            "key_id",
+            "issued_at",
+            "resource",
+            "params",
+            "data_sha256",
+            "signature_alg",
+            "signature",
+          ],
+          properties: {
+            issuer: { type: "string" },
+            key_id: { type: "string" },
+            issued_at: { type: "string" },
+            resource: { type: "string" },
+            params: { type: "object" },
+            data_sha256: { type: "string" },
+            signature_alg: { type: "string", enum: ["Ed25519"] },
+            signature: { type: "string" },
+          },
+        },
+      },
+    },
+  },
+});
+
 const kalshiDiscovery = declareDiscoveryExtension({
   pathParamsSchema: {
     type: "object",
@@ -739,6 +936,7 @@ export function buildApp(env: Env) {
   };
   const cheapPayment = { ...basePayment, price: "$0.001" };
   const batchPayment = { ...basePayment, price: "$0.02" };
+  const attestedPayment = { ...basePayment, price: "$0.02" };
 
   const MAX_BATCH = 20;
 
@@ -749,6 +947,29 @@ export function buildApp(env: Env) {
   //
   // This fixes the "agent paid, got nothing, never comes back" failure mode.
   app.use("/api/polymarket/odds", async (c, next) => {
+    const slug = c.req.query("slug");
+    if (!slug)
+      return c.json(
+        {
+          error: "missing query param: slug",
+          example: "?slug=will-donald-trump-win-the-presidential-election",
+          docs: "https://polymarket-odds-x402.goldencalf.workers.dev/llms.txt",
+        },
+        400,
+      );
+    const result = await fetchPolymarketOdds(slug);
+    if (!result.ok) {
+      return c.json(
+        { error: result.message },
+        result.status as 400 | 404 | 500 | 502 | 504,
+      );
+    }
+    c.set("odds", result.data);
+    await next();
+  });
+
+  // Attested single-slug Polymarket. Same data, wrapped in Ed25519 receipt.
+  app.use("/api/polymarket/odds/attested", async (c, next) => {
     const slug = c.req.query("slug");
     if (!slug)
       return c.json(
@@ -881,6 +1102,15 @@ export function buildApp(env: Env) {
           tags: ["prediction-markets", "polymarket", "odds", "cheap"],
           extensions: { ...polymarketDiscovery },
         },
+        "GET /api/polymarket/odds/attested": {
+          accepts: [attestedPayment],
+          description:
+            "Same data as /api/polymarket/odds wrapped in an Ed25519-signed receipt (issuer, timestamp, params, data hash). Any third party can verify with the public key published at /.well-known/attestation-public-key. For audit, compliance, or counterparty-settlement workflows.",
+          mimeType: "application/json",
+          serviceName: "goldencalf",
+          tags: ["prediction-markets", "polymarket", "attestation", "audit", "receipt"],
+          extensions: { ...attestedDiscovery },
+        },
         "GET /api/polymarket/odds/batch": {
           accepts: [batchPayment],
           description:
@@ -907,6 +1137,24 @@ export function buildApp(env: Env) {
   app.get("/api/polymarket/odds", (c) => c.json(c.get("odds")));
   app.get("/api/polymarket/odds-cheap", (c) => c.json(c.get("odds")));
   app.get("/api/polymarket/odds/batch", (c) => c.json(c.get("batch")));
+  app.get("/api/polymarket/odds/attested", async (c) => {
+    const odds = c.get("odds") as OddsResponse;
+    const slug = c.req.query("slug") ?? "";
+    try {
+      const attested = await signAttestation(
+        c.env,
+        "/api/polymarket/odds/attested",
+        { slug },
+        odds,
+      );
+      return c.json(attested);
+    } catch (err) {
+      return c.json(
+        { error: `attestation failed: ${(err as Error).message}` },
+        500,
+      );
+    }
+  });
   app.get("/api/kalshi/odds", (c) => c.json(c.get("odds")));
 
   app.get("/", (c) =>
@@ -924,12 +1172,32 @@ export function buildApp(env: Env) {
           price: "$0.02",
           note: `up to ${MAX_BATCH} slugs per call`,
         },
+        {
+          path: "GET /api/polymarket/odds/attested?slug=<slug>",
+          price: "$0.02",
+          note: "Ed25519 signed receipt wrapping the same data; verify with /.well-known/attestation-public-key",
+        },
         { path: "GET /api/kalshi/odds?ticker=<ticker>", price: "$0.005" },
       ],
       network: env.NETWORK,
       sources: ["polymarket", "kalshi"],
     }),
   );
+
+  // Publish the attestation public key so verifiers don't need any contact
+  // with us to check receipts. Just needs the key + the signature algorithm.
+  app.get("/.well-known/attestation-public-key", (c) => {
+    c.header("Cache-Control", ONE_DAY_CACHE);
+    return c.json({
+      issuer: ATTESTATION_ISSUER,
+      key_id: ATTESTATION_KEY_ID,
+      algorithm: "Ed25519",
+      public_key_base64: ATTESTATION_PUBLIC_KEY_B64,
+      use: "Verifies receipts returned by /api/polymarket/odds/attested",
+      verification_note:
+        "Canonical JSON (sorted keys) of {issuer, key_id, issued_at, resource, params, data_sha256} is signed with Ed25519. Base64-decode the signature and verify with the public key above.",
+    });
+  });
 
   // --- Well-known discovery endpoints ------------------------------------
   // Served unprotected with long cache. Agent crawlers hit these first to
