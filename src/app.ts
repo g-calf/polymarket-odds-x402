@@ -707,7 +707,7 @@ export function buildApp(env: Env) {
       discovery: {
         bazaar_payai: `${env.FACILITATOR_URL}/discovery/resources`,
       },
-      source_repo: "https://gitlab.com/alxndrwlsn/goldencalf",
+      source_repo: "https://github.com/g-calf/polymarket-odds-x402",
     };
   }
 
@@ -794,7 +794,7 @@ Three tools register: \`get_polymarket_odds\`, \`get_kalshi_odds\`, \`get_polyma
 - [Service manifest](${base}/.well-known/x402)
 - [OpenAPI spec](${base}/openapi.json)
 - [Agent card](${base}/.well-known/agent.json)
-- [Source repo](https://gitlab.com/alxndrwlsn/goldencalf)
+- [Source repo](https://github.com/g-calf/polymarket-odds-x402)
 `,
     );
   });
@@ -812,7 +812,7 @@ Three tools register: \`get_polymarket_odds\`, \`get_kalshi_odds\`, \`get_polyma
         version: "0.2.0",
         description:
           "Live Polymarket and Kalshi odds, paid per call via x402 on Base mainnet. See /.well-known/x402 for the full payment manifest and /llms.txt for a plaintext summary.",
-        contact: { name: "source", url: "https://gitlab.com/alxndrwlsn/goldencalf" },
+        contact: { name: "source", url: "https://github.com/g-calf/polymarket-odds-x402" },
         license: { name: "MIT" },
       },
       servers: [{ url: base }],

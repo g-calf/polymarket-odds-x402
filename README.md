@@ -1,5 +1,9 @@
 # goldencalf — Polymarket + Kalshi odds via x402
 
+[![npm](https://img.shields.io/npm/v/@gcalf/mcp?label=%40gcalf%2Fmcp)](https://www.npmjs.com/package/@gcalf/mcp)
+[![status](https://img.shields.io/badge/status-live-brightgreen)](https://polymarket-odds-x402.goldencalf.workers.dev)
+[![x402](https://img.shields.io/badge/x402-Base%20mainnet-blue)](https://polymarket-odds-x402.goldencalf.workers.dev/.well-known/x402)
+
 Agent-native API that returns live implied odds for prediction markets,
 gated by x402 micropayments on Base mainnet. No API keys, no accounts, no
 subscriptions — pay per call in USDC.

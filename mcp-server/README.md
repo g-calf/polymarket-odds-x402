@@ -61,7 +61,7 @@ network selected. No ETH needed — the x402 facilitator covers gas.
 
 Same server-side endpoints documented at:
 - Live: https://polymarket-odds-x402.goldencalf.workers.dev
-- Source: https://gitlab.com/alxndrwlsn/goldencalf
+- Source: https://github.com/g-calf/polymarket-odds-x402
 
 ## License
 

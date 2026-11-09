@@ -5,7 +5,7 @@ One-tap-ready copy for each channel. Edit tone if you want but the facts are che
 Key links to reuse everywhere:
 - API: https://polymarket-odds-x402.goldencalf.workers.dev
 - MCP: https://www.npmjs.com/package/@gcalf/mcp
-- Repo: https://gitlab.com/alxndrwlsn/goldencalf
+- Repo: https://github.com/g-calf/polymarket-odds-x402
 - Service manifest: https://polymarket-odds-x402.goldencalf.workers.dev/.well-known/x402
 - llms.txt: https://polymarket-odds-x402.goldencalf.workers.dev/llms.txt
 - OpenAPI: https://polymarket-odds-x402.goldencalf.workers.dev/openapi.json
@@ -39,7 +39,7 @@ Three tools auto-register. Set CLIENT_PRIVATE_KEY to a funded Base wallet (~$1 U
 
 **5/** Marginal cost ≈ $0. Polymarket Gamma + Kalshi public APIs are free. Cloudflare Workers runtime is free. Facilitator eats on-chain gas. Agent pays $0.005 → clean margin.
 
-Source + docs: https://gitlab.com/alxndrwlsn/goldencalf
+Source + docs: https://github.com/g-calf/polymarket-odds-x402
 
 Reply with questions / breakage / feature asks.
 
@@ -72,7 +72,7 @@ Response has: outcomes with implied probabilities, 24h volume, liquidity, resolu
 
 Pre-paywall validator: bad slugs return 404 without taking payment — agents don't churn on invalid IDs.
 
-Source: `https://gitlab.com/alxndrwlsn/goldencalf`
+Source: `https://github.com/g-calf/polymarket-odds-x402`
 
 Would love: feedback on pricing, which additional endpoints would actually get used, and any discovery/Bazaar listings I'm missing.
 
@@ -96,7 +96,7 @@ Published MCP server (`@gcalf/mcp` on npm), full OpenAPI, agent-card manifests a
 
 Appeal: prediction markets are a strong real-time signal for agents reasoning about sports, elections, crypto, macro. Replaces scraping/vendor-contract paths with a single paid request.
 
-Repo: https://gitlab.com/alxndrwlsn/goldencalf
+Repo: https://github.com/g-calf/polymarket-odds-x402
 
 ---
 
