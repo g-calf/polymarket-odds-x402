@@ -868,6 +868,8 @@ export function buildApp(env: Env) {
           description:
             "Current implied odds for a single Polymarket market by slug.",
           mimeType: "application/json",
+          serviceName: "goldencalf",
+          tags: ["prediction-markets", "polymarket", "odds", "sports", "events"],
           extensions: { ...polymarketDiscovery },
         },
         "GET /api/polymarket/odds-cheap": {
@@ -875,6 +877,8 @@ export function buildApp(env: Env) {
           description:
             "Same as /api/polymarket/odds but priced at $0.001. Price elasticity test.",
           mimeType: "application/json",
+          serviceName: "goldencalf",
+          tags: ["prediction-markets", "polymarket", "odds", "cheap"],
           extensions: { ...polymarketDiscovery },
         },
         "GET /api/polymarket/odds/batch": {
@@ -882,6 +886,8 @@ export function buildApp(env: Env) {
           description:
             "Batch Polymarket odds lookup: up to 20 slugs per paid call at $0.02 (vs. 20x$0.005 singles).",
           mimeType: "application/json",
+          serviceName: "goldencalf",
+          tags: ["prediction-markets", "polymarket", "odds", "batch"],
           extensions: { ...batchDiscovery },
         },
         "GET /api/kalshi/odds": {
@@ -889,6 +895,8 @@ export function buildApp(env: Env) {
           description:
             "Current implied odds for a single Kalshi market by ticker.",
           mimeType: "application/json",
+          serviceName: "goldencalf",
+          tags: ["prediction-markets", "kalshi", "odds", "sports", "events"],
           extensions: { ...kalshiDiscovery },
         },
       },
