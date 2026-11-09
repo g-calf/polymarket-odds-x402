@@ -16,6 +16,14 @@ export type Env = {
       indexes?: string[];
     }): void;
   };
+  // D1 durable log (odds history + payer attention). Optional for local Node.
+  DB?: {
+    prepare(query: string): {
+      bind(...args: unknown[]): {
+        run(): Promise<unknown>;
+      };
+    };
+  };
 };
 
 export type BatchOddsResponse = {
@@ -29,6 +37,81 @@ type Vars = {
   odds: OddsResponse;
   batch: BatchOddsResponse;
 };
+
+// --- D1 snapshot logging + payer extraction -------------------------------
+
+// Decode the x402 payment header (base64 JSON of signed payload) and
+// extract the paying wallet. Tries both modern (PAYMENT-SIGNATURE) and
+// legacy (X-PAYMENT) header names.
+function extractPayer(headerValue: string | undefined | null): string | null {
+  if (!headerValue) return null;
+  try {
+    const json = JSON.parse(
+      // atob handles standard base64; replace url-safe chars first.
+      atob(headerValue.replace(/-/g, "+").replace(/_/g, "/")),
+    );
+    // x402 v2 EIP-3009 payload: payload.authorization.from
+    const from =
+      json?.payload?.authorization?.from ??
+      json?.authorization?.from ??
+      json?.from ??
+      null;
+    return typeof from === "string" ? from : null;
+  } catch {
+    return null;
+  }
+}
+
+async function logSnapshot(
+  db: Env["DB"],
+  row: {
+    ts: number;
+    endpoint: string;
+    source: string | null;
+    market_id: string | null;
+    outcomes_json: string | null;
+    volume_24h: number | null;
+    liquidity: number | null;
+    active: boolean | null;
+    closed: boolean | null;
+    status: number;
+    latency_ms: number;
+    paid: boolean;
+    payer_wallet: string | null;
+    facilitator: string;
+  },
+): Promise<void> {
+  if (!db) return;
+  try {
+    await db
+      .prepare(
+        `INSERT INTO odds_snapshots
+         (ts, endpoint, source, market_id, outcomes_json, volume_24h,
+          liquidity, active, closed, status, latency_ms, paid, payer_wallet,
+          facilitator)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        row.ts,
+        row.endpoint,
+        row.source,
+        row.market_id,
+        row.outcomes_json,
+        row.volume_24h,
+        row.liquidity,
+        row.active === null ? null : row.active ? 1 : 0,
+        row.closed === null ? null : row.closed ? 1 : 0,
+        row.status,
+        row.latency_ms,
+        row.paid ? 1 : 0,
+        row.payer_wallet,
+        row.facilitator,
+      )
+      .run();
+  } catch {
+    // never let logging break a response
+  }
+}
 
 export type OddsResponse = {
   // Native identifier: Polymarket slug or Kalshi ticker.
@@ -412,26 +495,104 @@ const kalshiDiscovery = declareDiscoveryExtension({
 export function buildApp(env: Env) {
   const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
-  // Analytics logger: wraps every request so we can tell paid vs unpaid,
-  // which source, which identifier, status, and latency. Never lets a
-  // write failure break the response.
+  // Logger: wraps every request. Writes to Analytics Engine (fast, 90-day
+  // retention, operational metrics) AND to D1 (durable, seeds history/payer
+  // moats). Both are best-effort and never block the response.
   app.use(async (c, next) => {
     const t0 = Date.now();
     await next();
     const latency = Date.now() - t0;
+    const path = c.req.path;
+    const paymentHeader =
+      c.req.header("PAYMENT-SIGNATURE") ??
+      c.req.header("payment-signature") ??
+      c.req.header("X-PAYMENT") ??
+      c.req.header("x-payment");
+    const paid = Boolean(paymentHeader);
+    const payer = extractPayer(paymentHeader);
+    const marketId =
+      c.req.query("slug") ?? c.req.query("ticker") ?? "";
+    const status = c.res.status;
+
+    // Analytics Engine (sync, non-blocking)
     try {
       c.env.ANALYTICS?.writeDataPoint({
-        blobs: [
-          c.req.path,
-          c.req.query("slug") ?? c.req.query("ticker") ?? "",
-          c.req.header("X-PAYMENT") ? "paid" : "unpaid",
-          String(c.res.status),
-        ],
+        blobs: [path, marketId, paid ? "paid" : "unpaid", String(status)],
         doubles: [latency],
-        indexes: [c.req.path.split("/")[2] ?? "other"],
+        indexes: [path.split("/")[2] ?? "other"],
       });
-    } catch {
-      // never throw on analytics
+    } catch {}
+
+    // D1 snapshot — pull odds from context if the handler stored them.
+    // ctx.waitUntil lets the response return before the DB write resolves.
+    const odds = c.get("odds") as OddsResponse | undefined;
+    const batch = c.get("batch") as BatchOddsResponse | undefined;
+    // For a batch request, log one row per market so each timeseries entry
+    // is queryable per-slug.
+    const rows: Array<Parameters<typeof logSnapshot>[1]> = [];
+    const facilitator = c.env.FACILITATOR_URL;
+    const commonTs = Math.floor(Date.now() / 1000);
+    if (batch && batch.odds?.length) {
+      for (const o of batch.odds) {
+        rows.push({
+          ts: commonTs,
+          endpoint: path,
+          source: o.source,
+          market_id: o.id,
+          outcomes_json: JSON.stringify(o.outcomes),
+          volume_24h: o.volume24hr,
+          liquidity: o.liquidity,
+          active: o.active,
+          closed: o.closed,
+          status,
+          latency_ms: latency,
+          paid,
+          payer_wallet: payer,
+          facilitator,
+        });
+      }
+    } else if (odds) {
+      rows.push({
+        ts: commonTs,
+        endpoint: path,
+        source: odds.source,
+        market_id: odds.id,
+        outcomes_json: JSON.stringify(odds.outcomes),
+        volume_24h: odds.volume24hr,
+        liquidity: odds.liquidity,
+        active: odds.active,
+        closed: odds.closed,
+        status,
+        latency_ms: latency,
+        paid,
+        payer_wallet: payer,
+        facilitator,
+      });
+    } else if (path.startsWith("/api/")) {
+      // Request hit an /api/ path but no odds were resolved (400/404/error).
+      // Still log the meta-row so we see demand even for failed calls.
+      rows.push({
+        ts: commonTs,
+        endpoint: path,
+        source: null,
+        market_id: marketId || null,
+        outcomes_json: null,
+        volume_24h: null,
+        liquidity: null,
+        active: null,
+        closed: null,
+        status,
+        latency_ms: latency,
+        paid,
+        payer_wallet: payer,
+        facilitator,
+      });
+    }
+    if (rows.length && c.env.DB) {
+      const db = c.env.DB;
+      c.executionCtx.waitUntil(
+        Promise.all(rows.map((r) => logSnapshot(db, r))).then(() => {}),
+      );
     }
   });
 

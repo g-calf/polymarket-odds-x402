@@ -18,5 +18,15 @@
   // Request-level analytics. Query from CF dashboard SQL or the GraphQL API.
   "analytics_engine_datasets": [
     { "binding": "ANALYTICS", "dataset": "polymarket_odds_x402" }
+  ],
+  // Odds-value time series: durable store for the Level 2 moat.
+  // One row per served request (both 402 and paid). Seeds historical-odds
+  // product once >=30 days of data accumulated.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gcalf-logs",
+      "database_id": "b42f705f-8bb9-4904-9f22-ff4f177bb657"
+    }
   ]
 }
