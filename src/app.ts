@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
@@ -464,7 +464,15 @@ export function buildApp(env: Env) {
   // This fixes the "agent paid, got nothing, never comes back" failure mode.
   app.use("/api/polymarket/odds", async (c, next) => {
     const slug = c.req.query("slug");
-    if (!slug) return c.json({ error: "missing query param: slug" }, 400);
+    if (!slug)
+      return c.json(
+        {
+          error: "missing query param: slug",
+          example: "?slug=will-donald-trump-win-the-presidential-election",
+          docs: "https://polymarket-odds-x402.goldencalf.workers.dev/llms.txt",
+        },
+        400,
+      );
     const result = await fetchPolymarketOdds(slug);
     if (!result.ok) {
       return c.json(
@@ -479,7 +487,15 @@ export function buildApp(env: Env) {
   // Cheap single-slug Polymarket at $0.001 — parallel path for price elasticity.
   app.use("/api/polymarket/odds-cheap", async (c, next) => {
     const slug = c.req.query("slug");
-    if (!slug) return c.json({ error: "missing query param: slug" }, 400);
+    if (!slug)
+      return c.json(
+        {
+          error: "missing query param: slug",
+          example: "?slug=will-donald-trump-win-the-presidential-election",
+          docs: "https://polymarket-odds-x402.goldencalf.workers.dev/llms.txt",
+        },
+        400,
+      );
     const result = await fetchPolymarketOdds(slug);
     if (!result.ok) {
       return c.json(
@@ -538,7 +554,15 @@ export function buildApp(env: Env) {
 
   app.use("/api/kalshi/odds", async (c, next) => {
     const ticker = c.req.query("ticker");
-    if (!ticker) return c.json({ error: "missing query param: ticker" }, 400);
+    if (!ticker)
+      return c.json(
+        {
+          error: "missing query param: ticker",
+          example: "?ticker=KXNFLGAME-26NOV16LACBAL-LAC",
+          docs: "https://polymarket-odds-x402.goldencalf.workers.dev/llms.txt",
+        },
+        400,
+      );
     const result = await fetchKalshiOdds(ticker);
     if (!result.ok) {
       return c.json(
@@ -612,6 +636,335 @@ export function buildApp(env: Env) {
       sources: ["polymarket", "kalshi"],
     }),
   );
+
+  // --- Well-known discovery endpoints ------------------------------------
+  // Served unprotected with long cache. Agent crawlers hit these first to
+  // understand what the service does and how to call it. Analytics showed
+  // ~100+ daily 404s on these paths; converting them to 200s turns passive
+  // probes into actionable engagement.
+
+  const ONE_DAY_CACHE = "public, max-age=86400, s-maxage=86400";
+
+  function serviceManifest(baseUrl: string) {
+    return {
+      name: "goldencalf",
+      description:
+        "Live Polymarket and Kalshi prediction market odds, paid per call via x402 on Base mainnet. No API keys, no accounts, no subscriptions.",
+      base_url: baseUrl,
+      payment: {
+        protocol: "x402",
+        protocol_version: 2,
+        network: env.NETWORK,
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        asset_symbol: "USDC",
+        asset_decimals: 6,
+        pay_to: env.PAYOUT_ADDRESS,
+        facilitator: env.FACILITATOR_URL,
+      },
+      endpoints: [
+        {
+          method: "GET",
+          path: "/api/polymarket/odds",
+          query: { slug: "string (Polymarket market slug)" },
+          price_usdc: 0.005,
+          returns: "single OddsResponse",
+        },
+        {
+          method: "GET",
+          path: "/api/polymarket/odds-cheap",
+          query: { slug: "string" },
+          price_usdc: 0.001,
+          returns: "single OddsResponse",
+          note: "cheaper variant for cost-sensitive agents",
+        },
+        {
+          method: "GET",
+          path: "/api/polymarket/odds/batch",
+          query: {
+            slugs: `comma-separated slugs (max ${MAX_BATCH})`,
+          },
+          price_usdc: 0.02,
+          returns: "BatchOddsResponse { odds, errors, timestamp }",
+          note: "one payment covers up to 20 markets",
+        },
+        {
+          method: "GET",
+          path: "/api/kalshi/odds",
+          query: { ticker: "string (Kalshi market ticker)" },
+          price_usdc: 0.005,
+          returns: "single OddsResponse",
+        },
+      ],
+      mcp_server: {
+        npm: "@gcalf/mcp",
+        install: "npm install -g @gcalf/mcp",
+        tools: [
+          "get_polymarket_odds",
+          "get_kalshi_odds",
+          "get_polymarket_odds_batch",
+        ],
+      },
+      discovery: {
+        bazaar_payai: `${env.FACILITATOR_URL}/discovery/resources`,
+      },
+      source_repo: "https://gitlab.com/alxndrwlsn/goldencalf",
+    };
+  }
+
+  function baseUrlOf(reqUrl: string): string {
+    try {
+      const u = new URL(reqUrl);
+      return `${u.protocol}//${u.host}`;
+    } catch {
+      return "https://polymarket-odds-x402.goldencalf.workers.dev";
+    }
+  }
+
+  // x402's commonly-probed .well-known path. We respond with the service
+  // manifest (useful superset) rather than a protocol-defined schema.
+  app.get("/.well-known/x402", (c) => {
+    c.header("Cache-Control", ONE_DAY_CACHE);
+    return c.json(serviceManifest(baseUrlOf(c.req.url)));
+  });
+
+  // Agent-card style manifests (several conventions, same payload works).
+  const agentCardHandler = (c: Context) => {
+    c.header("Cache-Control", ONE_DAY_CACHE);
+    const base = baseUrlOf(c.req.url);
+    return c.json({
+      schema_version: "v1",
+      name_for_model: "goldencalf_odds",
+      name_for_human: "Goldencalf Prediction Market Odds",
+      description_for_model:
+        "Fetch live implied odds for individual Polymarket and Kalshi prediction markets. Each call costs USDC (micropayment) via x402 on Base mainnet. Use for sports betting markets, elections, crypto prices, and any event with a public prediction market. Returns outcomes with implied probabilities, volume, liquidity, and resolution date.",
+      description_for_human:
+        "x402-paid API for Polymarket and Kalshi prediction market odds.",
+      auth: {
+        type: "x402",
+        protocol_version: 2,
+        network: env.NETWORK,
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        pay_to: env.PAYOUT_ADDRESS,
+      },
+      api: { type: "openapi", url: `${base}/openapi.json` },
+      logo_url: `${base}/favicon.ico`,
+      contact_email: "",
+      legal_info_url: `${base}/`,
+    });
+  };
+  app.get("/.well-known/agent.json", agentCardHandler);
+  app.get("/.well-known/agent-card.json", agentCardHandler);
+  app.get("/agents.json", agentCardHandler);
+
+  // llms.txt — plaintext index optimized for LLM crawlers (llmstxt.org).
+  app.get("/llms.txt", (c) => {
+    const base = baseUrlOf(c.req.url);
+    c.header("Cache-Control", ONE_DAY_CACHE);
+    c.header("Content-Type", "text/plain; charset=utf-8");
+    return c.body(
+      `# goldencalf
+
+> Live implied odds for Polymarket and Kalshi prediction markets. Each call is paid per request in USDC on Base mainnet via the x402 protocol. No API keys, no accounts, no subscriptions.
+
+## Paid endpoints
+
+- [GET /api/polymarket/odds?slug=SLUG](${base}/api/polymarket/odds): single Polymarket market, $0.005 USDC
+- [GET /api/polymarket/odds-cheap?slug=SLUG](${base}/api/polymarket/odds-cheap): same, $0.001 USDC (price A/B)
+- [GET /api/polymarket/odds/batch?slugs=A,B,C](${base}/api/polymarket/odds/batch): up to ${MAX_BATCH} Polymarket slugs, $0.02 USDC
+- [GET /api/kalshi/odds?ticker=TICKER](${base}/api/kalshi/odds): single Kalshi market, $0.005 USDC
+
+## How to call
+
+1. GET the endpoint without a payment header. The response is HTTP 402 with a \`payment-required\` header containing base64-encoded JSON payment requirements (asset, amount, pay_to, network).
+2. Sign an EIP-3009 TransferWithAuthorization for the stated amount of USDC to the stated pay_to on Base mainnet (network ${env.NETWORK}, asset 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913).
+3. Resend the request with the signed payment in an \`X-PAYMENT\` header. Response is HTTP 200 with the market odds JSON.
+
+The x402 client libraries (\`@x402/fetch\` for JS/TS, community Python clients) handle this loop automatically.
+
+## MCP (Claude Desktop, other MCP runtimes)
+
+\`\`\`
+npm install -g @gcalf/mcp
+\`\`\`
+
+Three tools register: \`get_polymarket_odds\`, \`get_kalshi_odds\`, \`get_polymarket_odds_batch\`.
+
+## Metadata
+
+- [Service manifest](${base}/.well-known/x402)
+- [OpenAPI spec](${base}/openapi.json)
+- [Agent card](${base}/.well-known/agent.json)
+- [Source repo](https://gitlab.com/alxndrwlsn/goldencalf)
+`,
+    );
+  });
+
+  // OpenAPI 3.1 spec. Documents all paid endpoints; x402 payment is noted in
+  // security + description but OpenAPI has no native x402 scheme, so we
+  // describe it as a bearer auth with scheme "x402" for machine consumption.
+  app.get("/openapi.json", (c) => {
+    const base = baseUrlOf(c.req.url);
+    c.header("Cache-Control", ONE_DAY_CACHE);
+    return c.json({
+      openapi: "3.1.0",
+      info: {
+        title: "goldencalf — prediction market odds (x402)",
+        version: "0.2.0",
+        description:
+          "Live Polymarket and Kalshi odds, paid per call via x402 on Base mainnet. See /.well-known/x402 for the full payment manifest and /llms.txt for a plaintext summary.",
+        contact: { name: "source", url: "https://gitlab.com/alxndrwlsn/goldencalf" },
+        license: { name: "MIT" },
+      },
+      servers: [{ url: base }],
+      components: {
+        securitySchemes: {
+          x402: {
+            type: "http",
+            scheme: "x402",
+            description:
+              "x402 micropayment in USDC on Base mainnet. See /.well-known/x402 for amount, asset, and pay_to per endpoint.",
+          },
+        },
+        schemas: {
+          Outcome: {
+            type: "object",
+            required: ["name", "price", "probability"],
+            properties: {
+              name: { type: "string" },
+              price: { type: "number", minimum: 0, maximum: 1 },
+              probability: { type: "string" },
+            },
+          },
+          OddsResponse: ODDS_RESPONSE_SCHEMA,
+          BatchOddsResponse: {
+            type: "object",
+            required: ["odds", "errors", "timestamp"],
+            properties: {
+              odds: { type: "array", items: ODDS_RESPONSE_SCHEMA },
+              errors: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["id", "error"],
+                  properties: {
+                    id: { type: "string" },
+                    error: { type: "string" },
+                  },
+                },
+              },
+              timestamp: { type: "string" },
+            },
+          },
+        },
+      },
+      security: [{ x402: [] }],
+      paths: {
+        "/api/polymarket/odds": {
+          get: {
+            summary: "Single Polymarket market odds ($0.005)",
+            parameters: [
+              {
+                name: "slug",
+                in: "query",
+                required: true,
+                schema: { type: "string" },
+              },
+            ],
+            responses: {
+              "200": {
+                description: "Odds",
+                content: {
+                  "application/json": {
+                    schema: { $ref: "#/components/schemas/OddsResponse" },
+                  },
+                },
+              },
+              "402": { description: "Payment required (see payment-required header)" },
+              "404": { description: "Market not found (no payment taken)" },
+            },
+          },
+        },
+        "/api/polymarket/odds-cheap": {
+          get: {
+            summary: "Single Polymarket market odds, cheap variant ($0.001)",
+            parameters: [
+              {
+                name: "slug",
+                in: "query",
+                required: true,
+                schema: { type: "string" },
+              },
+            ],
+            responses: {
+              "200": {
+                description: "Odds",
+                content: {
+                  "application/json": {
+                    schema: { $ref: "#/components/schemas/OddsResponse" },
+                  },
+                },
+              },
+              "402": { description: "Payment required" },
+              "404": { description: "Market not found" },
+            },
+          },
+        },
+        "/api/polymarket/odds/batch": {
+          get: {
+            summary: `Up to ${MAX_BATCH} Polymarket markets ($0.02)`,
+            parameters: [
+              {
+                name: "slugs",
+                in: "query",
+                required: true,
+                schema: { type: "string" },
+                description: `Comma-separated slugs, max ${MAX_BATCH}`,
+              },
+            ],
+            responses: {
+              "200": {
+                description: "Batch odds + per-slug errors",
+                content: {
+                  "application/json": {
+                    schema: {
+                      $ref: "#/components/schemas/BatchOddsResponse",
+                    },
+                  },
+                },
+              },
+              "402": { description: "Payment required" },
+              "404": { description: "No resolvable markets in batch (no payment taken)" },
+            },
+          },
+        },
+        "/api/kalshi/odds": {
+          get: {
+            summary: "Single Kalshi market odds ($0.005)",
+            parameters: [
+              {
+                name: "ticker",
+                in: "query",
+                required: true,
+                schema: { type: "string" },
+              },
+            ],
+            responses: {
+              "200": {
+                description: "Odds",
+                content: {
+                  "application/json": {
+                    schema: { $ref: "#/components/schemas/OddsResponse" },
+                  },
+                },
+              },
+              "402": { description: "Payment required" },
+              "404": { description: "Market not found" },
+            },
+          },
+        },
+      },
+    });
+  });
 
   // Unprotected diagnostic: can the CF POP actually reach each upstream?
   // Reports latency/status without any payment flow in the way.
